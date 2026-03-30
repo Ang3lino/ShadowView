@@ -35,6 +35,7 @@ CONFIG = {
     "temperature": 0.3,
     "num_predict": 100,
     "screenshot_interval": 2,
+    "debug_mode": False,  # Cambiar a True para ver coordenadas de captura
 }
 
 # Estado global
@@ -45,12 +46,72 @@ _last_screenshot_hash = None
 # ============================================================================
 
 
+def get_quarter_screen_region() -> Tuple[int, int, int, int]:
+    """
+    Calcula la región de captura (1/4 de pantalla centrada en el cursor).
+
+    Returns:
+        Tuple de (left, top, right, bottom) en píxeles.
+        Si el cursor rebasa los límites, la región se ajusta sin rebasar.
+    """
+    try:
+        # Obtener posición del cursor
+        cursor_x, cursor_y = pyautogui.position()
+
+        # Obtener dimensiones de la pantalla
+        if platform.system() == "Darwin":
+            screen = pyautogui.screenshot()
+            screen_width, screen_height = screen.size
+        else:
+            with mss() as sct:
+                monitor = sct.monitors[1]
+                screen_width = monitor["width"]
+                screen_height = monitor["height"]
+
+        # Calcular dimensiones de la región: 1/4 de la pantalla
+        region_width = screen_width // 2
+        region_height = screen_height // 2
+
+        # Calcular coordenadas centradas en el cursor
+        left = cursor_x - region_width // 2
+        top = cursor_y - region_height // 2
+        right = left + region_width
+        bottom = top + region_height
+
+        # Ajustar para no rebasar los límites de la pantalla
+        if left < 0:
+            left = 0
+            right = min(region_width, screen_width)
+        if right > screen_width:
+            right = screen_width
+            left = max(0, right - region_width)
+
+        if top < 0:
+            top = 0
+            bottom = min(region_height, screen_height)
+        if bottom > screen_height:
+            bottom = screen_height
+            top = max(0, bottom - region_height)
+
+        if CONFIG["debug_mode"]:
+            print(f"   [DEBUG] Cursor: ({cursor_x}, {cursor_y})")
+            print(f"   [DEBUG] Región captura: ({left}, {top}, {right}, {bottom})")
+            print(f"   [DEBUG] Tamaño: {right - left}x{bottom - top}")
+
+        return left, top, right, bottom
+
+    except Exception as e:
+        print(f"[ERROR] Calculating region: {e}")
+        return 0, 0, 100, 100  # Fallback mínimo
+
+
 def take_screenshot() -> Optional[Image.Image]:
     """
-    Captura pantalla completa compatible con macOS.
-    En macOS usa pyautogui (requiere permisos de Acceso a Pantalla).
-    Fallback a mss en Linux/Windows.
+    Captura región de 1/4 de pantalla centrada en el cursor.
+    Compatible con macOS. Fallback a mss en Linux/Windows.
     """
+    left, top, right, bottom = get_quarter_screen_region()
+
     # macOS
     if platform.system() == "Darwin":
         if pyautogui is None:
@@ -59,8 +120,9 @@ def take_screenshot() -> Optional[Image.Image]:
             return None
 
         try:
-            screenshot = pyautogui.screenshot()
-            return screenshot
+            full_screenshot = pyautogui.screenshot()
+            cropped = full_screenshot.crop((left, top, right, bottom))
+            return cropped
         except Exception as e:
             print(f"[ERROR] Screenshot macOS: {e}")
             print("   Verifica permisos: Privacidad y Seguridad -> Acceso a Pantalla")
@@ -76,7 +138,13 @@ def take_screenshot() -> Optional[Image.Image]:
         try:
             with mss() as sct:
                 monitor = sct.monitors[1]
-                screenshot = sct.grab(monitor)
+                region = {
+                    "left": left,
+                    "top": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                }
+                screenshot = sct.grab(region)
                 return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
         except Exception as e:
             print(f"[ERROR] Screenshot: {e}")
