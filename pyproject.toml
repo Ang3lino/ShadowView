@@ -1,0 +1,22 @@
+[project]
+name = "shadowview"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "keyboard>=0.13.5",
+    "mss>=10.1.0",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.1.1",
+    "pyautogui>=0.9.54",
+    "pytesseract>=0.3.13",
+    "requests>=2.33.0",
+]
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "ruff>=0.15.8",
+]
