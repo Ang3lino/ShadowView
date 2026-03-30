@@ -1,14 +1,7 @@
 import platform
-import time
-import hashlib
-from typing import Optional, Tuple
+from typing import Optional
 
-import cv2
-import numpy as np
-import pytesseract
-import requests
 from PIL import Image
-
 
 try:
     import pyautogui
