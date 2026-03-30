@@ -16,12 +16,6 @@ from PIL import Image
 
 # Import platform-specific and optional modules
 try:
-    import keyboard
-except ImportError:
-    keyboard = None
-    print("[WARN] keyboard module not available - hotkey support disabled")
-
-try:
     import pyautogui
 except ImportError:
     pyautogui = None
@@ -292,17 +286,6 @@ def run_assistant() -> None:
     print(f"   - Model: {CONFIG['ollama_model']}")
     print("\n⌨️  Controls:")
     print("   - Press Ctrl+C to stop")
-
-    # Setup hotkey if keyboard available
-    if keyboard is not None:
-        print("   - Press F6 for manual capture")
-        keyboard.add_hotkey(
-            "f6", lambda: print("\n📸 Manual capture...") or process_screen()
-        )
-    else:
-        print(
-            "   - Manual capture via F6 not available (keyboard module not installed)"
-        )
 
     print("\n" + "=" * 50)
 

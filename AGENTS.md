@@ -128,19 +128,20 @@ except SpecificException as e:
 - **Preference**: Functional composition over OOP
 - **Return values**: Functions return data, not side effects
 - **Pipelines**: Build data pipelines with function composition (see `process_screen()`)
-- **Constants**: Store config in module-level `CONFIG` dict (main.py:19-29)
+- **Constants**: Store config in module-level `CONFIG` dict (main.py:35-44)
 
 ### Project Dependencies
-- **Core**: cv2 (OpenCV), mss, pytesseract, numpy, PIL, requests
+- **Core**: cv2 (OpenCV), mss, pytesseract, numpy, PIL, requests, pyautogui
 - **Dev**: black (formatting), ruff (linting)
 - **Python**: 3.12+ (from pyproject.toml)
 - **External services**: Ollama (local LLM server on localhost:11434)
+- **Platform-specific**: pyautogui for macOS, mss for Linux/Windows
 
 ### Special Conventions
 - **Alert syntax**: Use `[ALERTA]` for uncertain responses (Spanish convention)
 - **Status logging**: Use emoji prefixes for clarity (📸, 💡, ✅, ⚠️, 🔄)
 - **Configuration**: Never hardcode; use CONFIG dict for all settings
-- **Change detection**: Use hash comparison for efficiency (main.py:59-77)
+- **Change detection**: Use hash comparison for efficiency (main.py:92-106)
 
 ## Testing Patterns
 
@@ -150,7 +151,7 @@ except SpecificException as e:
 - **Integration**: Manual testing via `uv run python main.py manual`
 
 ## Key Files
-- `main.py` (399 lines): Core application with screen capture, OCR, LLM integration
-- `test.py` (121 lines): Pipeline testing with phase-by-phase output
+- `main.py` (312 lines): Core application with screen capture, OCR, LLM integration
+- `test.py` (69 lines): Pipeline testing with phase-by-phase output
 - `reference.py`: Backup/reference copy of main.py
 - `pyproject.toml`: Project metadata and dependencies
