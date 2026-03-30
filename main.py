@@ -6,6 +6,7 @@ Versión optimizada para macOS con captura de pantalla completa.
 import platform
 import time
 import hashlib
+import threading
 from typing import Optional, Tuple
 
 import cv2
@@ -25,6 +26,11 @@ try:
 except ImportError:
     mss = None
 
+try:
+    from pynput import keyboard as pynput_keyboard
+except ImportError:
+    pynput_keyboard = None
+
 # Configuración
 CONFIG = {
     "ollama_model": "mistral",
@@ -40,83 +46,174 @@ CONFIG = {
 
 # Estado global
 _last_screenshot_hash = None
+_capture_region: Optional[Tuple[int, int, int, int]] = (
+    None  # (left, top, right, bottom)
+)
+_region_definition_active = False
+_region_start_pos: Optional[Tuple[int, int]] = None
+_last_cursor_pos: Optional[Tuple[int, int]] = None
 
 # ============================================================================
 # SCREEN CAPTURE (macOS Compatible)
 # ============================================================================
 
 
-def get_quarter_screen_region() -> Tuple[int, int, int, int]:
+def normalize_rectangle(
+    x1: int, y1: int, x2: int, y2: int
+) -> Tuple[int, int, int, int]:
     """
-    Calcula la región de captura (1/4 de pantalla centrada en el cursor).
+    Normaliza un rectángulo para asegurar left < right y top < bottom.
+
+    Args:
+        x1, y1, x2, y2: Dos esquinas opuestas del rectángulo.
 
     Returns:
-        Tuple de (left, top, right, bottom) en píxeles.
-        Si el cursor rebasa los límites, la región se ajusta sin rebasar.
+        Tuple de (left, top, right, bottom).
     """
-    try:
-        # Obtener posición del cursor
-        cursor_x, cursor_y = pyautogui.position()
+    left = min(x1, x2)
+    right = max(x1, x2)
+    top = min(y1, y2)
+    bottom = max(y1, y2)
+    return left, top, right, bottom
 
-        # Obtener dimensiones de la pantalla
-        if platform.system() == "Darwin":
-            screen = pyautogui.screenshot()
-            screen_width, screen_height = screen.size
-        else:
+
+def clamp_rectangle(
+    left: int, top: int, right: int, bottom: int
+) -> Tuple[int, int, int, int]:
+    """
+    Ajusta un rectángulo para que no rebase los límites de la pantalla.
+
+    Args:
+        left, top, right, bottom: Coordenadas del rectángulo.
+
+    Returns:
+        Rectángulo ajustado dentro de los límites de pantalla.
+    """
+    if platform.system() == "Darwin":
+        if pyautogui is None:
+            return left, top, right, bottom
+        screen = pyautogui.screenshot()
+        screen_width, screen_height = screen.size
+    else:
+        try:
             with mss() as sct:
                 monitor = sct.monitors[1]
                 screen_width = monitor["width"]
                 screen_height = monitor["height"]
+        except Exception:
+            return left, top, right, bottom
 
-        # Calcular dimensiones de la región: 1/4 de la pantalla
-        region_width = screen_width // 2
-        region_height = screen_height // 2
+    left = max(0, min(left, screen_width))
+    right = max(0, min(right, screen_width))
+    top = max(0, min(top, screen_height))
+    bottom = max(0, min(bottom, screen_height))
 
-        # Calcular coordenadas centradas en el cursor
-        left = cursor_x - region_width // 2
-        top = cursor_y - region_height // 2
-        right = left + region_width
-        bottom = top + region_height
+    return left, top, right, bottom
 
-        # Ajustar para no rebasar los límites de la pantalla
-        if left < 0:
-            left = 0
-            right = min(region_width, screen_width)
-        if right > screen_width:
-            right = screen_width
-            left = max(0, right - region_width)
 
-        if top < 0:
-            top = 0
-            bottom = min(region_height, screen_height)
-        if bottom > screen_height:
-            bottom = screen_height
-            top = max(0, bottom - region_height)
+def wait_for_region_definition() -> Optional[Tuple[int, int, int, int]]:
+    """
+    Espera a que el usuario presione Ctrl y defina un rectángulo.
+    Retorna las esquinas opuestas del rectángulo.
 
-        if CONFIG["debug_mode"]:
-            print(f"   [DEBUG] Cursor: ({cursor_x}, {cursor_y})")
-            print(f"   [DEBUG] Región captura: ({left}, {top}, {right}, {bottom})")
-            print(f"   [DEBUG] Tamaño: {right - left}x{bottom - top}")
+    Returns:
+        Tuple de (left, top, right, bottom) o None si hay error.
+    """
+    global _region_definition_active, _region_start_pos, _last_cursor_pos
 
-        return left, top, right, bottom
+    if pynput_keyboard is None:
+        print("[ERROR] pynput keyboard library not available")
+        print("   Install with: uv sync")
+        return None
 
-    except Exception as e:
-        print(f"[ERROR] Calculating region: {e}")
-        return 0, 0, 100, 100  # Fallback mínimo
+    print("\n⌨️  Press and hold Ctrl to define capture region")
+    print("   Move cursor to first corner, then release Ctrl at opposite corner")
+    print("   (Press Ctrl again anytime to redefine region)")
+
+    _region_definition_active = False
+    _region_start_pos = None
+    ctrl_pressed = False
+
+    def on_press(key):
+        nonlocal ctrl_pressed
+        try:
+            if key == pynput_keyboard.Key.ctrl_l or key == pynput_keyboard.Key.ctrl_r:
+                if not ctrl_pressed:
+                    global _region_definition_active, _region_start_pos
+                    _region_definition_active = True
+                    _region_start_pos = pyautogui.position()
+                    ctrl_pressed = True
+                    if CONFIG["debug_mode"]:
+                        print(f"   [DEBUG] Ctrl pressed at {_region_start_pos}")
+        except AttributeError:
+            pass
+
+    def on_release(key):
+        nonlocal ctrl_pressed
+        try:
+            if key == pynput_keyboard.Key.ctrl_l or key == pynput_keyboard.Key.ctrl_r:
+                if ctrl_pressed:
+                    global _region_definition_active
+                    end_pos = pyautogui.position()
+                    if CONFIG["debug_mode"]:
+                        print(f"   [DEBUG] Ctrl released at {end_pos}")
+                    _region_definition_active = False
+                    ctrl_pressed = False
+                    return False  # Stop listener
+        except AttributeError:
+            pass
+
+    # Crear listener
+    listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+    listener.start()
+
+    # Esperar a que se complete la definición
+    while not _region_start_pos:
+        time.sleep(0.1)
+
+    while _region_definition_active:
+        time.sleep(0.1)
+
+    # Obtener posición final
+    end_pos = pyautogui.position()
+
+    # Detener listener
+    listener.stop()
+
+    if _region_start_pos == end_pos:
+        print("   ⚠️  Mouse didn't move. Region not changed.")
+        return None
+
+    left, top, right, bottom = normalize_rectangle(
+        _region_start_pos[0], _region_start_pos[1], end_pos[0], end_pos[1]
+    )
+    left, top, right, bottom = clamp_rectangle(left, top, right, bottom)
+
+    region_width = right - left
+    region_height = bottom - top
+    print(f"   ✅ Region defined: ({left}, {top}) to ({right}, {bottom})")
+    print(f"   📐 Size: {region_width}x{region_height}")
+
+    return left, top, right, bottom
 
 
 def take_screenshot() -> Optional[Image.Image]:
     """
-    Captura región de 1/4 de pantalla centrada en el cursor.
-    Compatible con macOS. Fallback a mss en Linux/Windows.
+    Captura la región personalizada definida por el usuario.
+    Requiere que _capture_region esté definida.
     """
-    left, top, right, bottom = get_quarter_screen_region()
+    global _capture_region
+
+    if _capture_region is None:
+        print("[ERROR] Capture region not defined")
+        return None
+
+    left, top, right, bottom = _capture_region
 
     # macOS
     if platform.system() == "Darwin":
         if pyautogui is None:
             print("[ERROR] pyautogui not available on macOS")
-            print("   Install with: uv sync")
             return None
 
         try:
@@ -125,19 +222,16 @@ def take_screenshot() -> Optional[Image.Image]:
             return cropped
         except Exception as e:
             print(f"[ERROR] Screenshot macOS: {e}")
-            print("   Verifica permisos: Privacidad y Seguridad -> Acceso a Pantalla")
             return None
 
     # Linux/Windows
     else:
         if mss is None:
             print("[ERROR] mss not available")
-            print("   Install with: uv sync")
             return None
 
         try:
             with mss() as sct:
-                monitor = sct.monitors[1]
                 region = {
                     "left": left,
                     "top": top,
@@ -324,11 +418,58 @@ def process_screen() -> Tuple[str, str, float]:
     return text, response, confidence
 
 
+def check_cursor_moved() -> bool:
+    """Verifica si el cursor se movió desde la última captura."""
+    global _last_cursor_pos
+
+    current_pos = pyautogui.position()
+
+    if _last_cursor_pos is None:
+        _last_cursor_pos = current_pos
+        return False
+
+    moved = current_pos != _last_cursor_pos
+    _last_cursor_pos = current_pos
+
+    return moved
+
+
+def setup_region_listener(on_ctrl_callback) -> None:
+    """Configura listener para redefinir región cuando Ctrl se presione."""
+    if pynput_keyboard is None:
+        return
+
+    ctrl_pressed = False
+
+    def on_press(key):
+        nonlocal ctrl_pressed
+        try:
+            if key == pynput_keyboard.Key.ctrl_l or key == pynput_keyboard.Key.ctrl_r:
+                if not ctrl_pressed:
+                    ctrl_pressed = True
+                    on_ctrl_callback()
+        except AttributeError:
+            pass
+
+    def on_release(key):
+        nonlocal ctrl_pressed
+        try:
+            if key == pynput_keyboard.Key.ctrl_l or key == pynput_keyboard.Key.ctrl_r:
+                ctrl_pressed = False
+        except AttributeError:
+            pass
+
+    listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+    listener.start()
+
+
 def run_assistant() -> None:
     """
     Loop principal del asistente.
-    Monitorea cambios de pantalla y procesa contenido.
+    Permite definir región con Ctrl y monitorea cambios de pantalla.
     """
+    global _capture_region
+
     print("\n" + "=" * 50)
     print("IQ-Edge Interview Assistant (macOS)")
     print("=" * 50)
@@ -348,17 +489,49 @@ def run_assistant() -> None:
             print("   Configure: System Settings -> Privacy -> Screen Recording")
             return
 
+    if pynput_keyboard is None:
+        print("\n⚠️  pynput keyboard library not available")
+        print("   Run: uv sync")
+        return
+
     print("\n⚙️  Configuration:")
     print(f"   - Screenshot every {CONFIG['screenshot_interval']}s")
     print(f"   - OCR: {CONFIG['ocr_languages']}")
     print(f"   - Model: {CONFIG['ollama_model']}")
     print("\n⌨️  Controls:")
+    print("   - Press Ctrl to define/redefine capture region")
     print("   - Press Ctrl+C to stop")
+
+    # Definir región inicial
+    print("\n" + "=" * 50)
+    _capture_region = wait_for_region_definition()
+
+    if _capture_region is None:
+        print("\n❌ Failed to define region")
+        return
 
     print("\n" + "=" * 50)
 
+    def on_ctrl_pressed():
+        """Callback cuando Ctrl es presionado durante el loop."""
+        global _capture_region
+        print("\n🔄 Redefining region...")
+        new_region = wait_for_region_definition()
+        if new_region is not None:
+            _capture_region = new_region
+            print("   ✅ Region updated")
+        else:
+            print("   ⚠️  Region unchanged")
+
+    setup_region_listener(on_ctrl_pressed)
+
     try:
         while True:
+            # Verificar si el cursor se movió
+            if not check_cursor_moved():
+                time.sleep(CONFIG["screenshot_interval"])
+                continue
+
             current_image = take_screenshot()
             if current_image and has_screen_changed(current_image):
                 print("\n🔄 Screen changed...")
