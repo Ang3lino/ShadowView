@@ -6,6 +6,7 @@ Optimized for macOS with full-screen capture.
 import hashlib
 import platform
 import time
+from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
@@ -107,6 +108,8 @@ _capture_region: Optional[Tuple[int, int, int, int]] = None
 _region_definition_active = False
 _region_start_pos: Optional[Tuple[int, int]] = None
 _last_cursor_pos: Optional[Tuple[int, int]] = None
+_last_capture_path: Optional[Path] = None
+_captures_dir: Path = Path("captures")
 
 # ============================================================================
 # SCREEN CAPTURE
@@ -247,13 +250,31 @@ def take_screenshot() -> Optional[Image.Image]:
 
 
 def has_screen_changed(image: Image.Image) -> bool:
-    """Check if screen content changed."""
-    global _last_screenshot_hash
+    """Check if screen content changed by comparing with last saved image."""
+    global _last_capture_path
     current_hash = hashlib.md5(image.tobytes()).hexdigest()
-    if _last_screenshot_hash is None or current_hash != _last_screenshot_hash:
-        _last_screenshot_hash = current_hash
-        return True
-    return False
+
+    if _last_capture_path and _last_capture_path.exists():
+        last_image = Image.open(_last_capture_path)
+        last_hash = hashlib.md5(last_image.tobytes()).hexdigest()
+        if current_hash == last_hash:
+            return False
+
+    _last_screenshot_hash = current_hash
+    return True
+
+
+def save_capture(image: Image.Image) -> Path:
+    """Save capture to captures/ directory with timestamp filename."""
+    global _last_capture_path
+    _captures_dir.mkdir(exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    milliseconds = int(time.time() * 1000) % 1000
+    filename = f"capture_{timestamp}_{milliseconds:03d}.png"
+    filepath = _captures_dir / filename
+    image.save(filepath)
+    _last_capture_path = filepath
+    return filepath
 
 
 # ============================================================================
@@ -264,8 +285,9 @@ def has_screen_changed(image: Image.Image) -> bool:
 def preprocess_image(image: np.ndarray) -> np.ndarray:
     """Preprocess image for better OCR."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-    return cv2.medianBlur(thresh, 3)
+    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(gray)
 
 
 def extract_text_from_image(image: Image.Image) -> Tuple[str, float]:
@@ -277,13 +299,11 @@ def extract_text_from_image(image: Image.Image) -> Tuple[str, float]:
             lang=CONFIG["ocr_languages"],
             output_type=pytesseract.Output.DICT,
         )
-
         texts, confidences = [], []
         for text, conf in zip(ocr_data["text"], ocr_data["conf"]):
             if text.strip() and int(conf) > CONFIG["min_confidence"]:
                 texts.append(text)
                 confidences.append(int(conf))
-
         return " ".join(texts), np.mean(confidences) if confidences else 0.0
     except Exception as e:
         print(f"[ERROR] OCR: {e}")
@@ -293,8 +313,6 @@ def extract_text_from_image(image: Image.Image) -> Tuple[str, float]:
 # ============================================================================
 # LLM
 # ============================================================================
-
-
 def analyze_content(text: str) -> str:
     """Detect content type."""
     text_lower = text.lower()
@@ -378,26 +396,24 @@ def format_response(response: str) -> str:
 # ============================================================================
 # MAIN LOOP
 # ============================================================================
-
-
 def process_screen() -> Tuple[str, str, float]:
     """Full pipeline."""
-    image = take_screenshot()
+    image: Optional[Image.Image] = take_screenshot()
     if not image:
         return "", "[ERROR] Screenshot failed", 0.0
-
-    text, confidence = extract_text_from_image(image)
-    if not text:
+    extracted_text: str = ""
+    confidence: float = 0.0
+    extracted_text, confidence = extract_text_from_image(image)
+    if not extracted_text:
         return "", "[INFO] No text detected", confidence
-
-    content_type = analyze_content(text)
-    prompt = build_dynamic_prompt(text, content_type)
-    raw_response = query_ollama(prompt)
-    return (
-        text,
-        format_response(raw_response) if raw_response else "[ERROR] No response",
-        confidence,
-    )
+    content_type = analyze_content(extracted_text)
+    prompt = build_dynamic_prompt(extracted_text, content_type)
+    raw_response: Optional[str] = query_ollama(prompt)
+    if raw_response:
+        response_text = format_response(raw_response)
+    else:
+        response_text = "[ERROR] No response"
+    return extracted_text, response_text, confidence
 
 
 def check_cursor_moved() -> bool:
@@ -413,7 +429,6 @@ def setup_region_listener(on_ctrl_callback) -> None:
     """Setup listener to redefine region on Ctrl press."""
     if pynput_keyboard is None:
         return
-
     ctrl_pressed = False
 
     def on_press(key):
@@ -440,14 +455,11 @@ def setup_region_listener(on_ctrl_callback) -> None:
 def run_assistant() -> None:
     """Main loop."""
     global _capture_region
-
     print("\n" + "=" * 50)
     print("ShadowView AI Assistant")
     print("=" * 50)
-
     if not check_dependencies():
         return
-
     if platform.system() == "Darwin" and pyautogui is not None:
         try:
             test = pyautogui.screenshot()
@@ -456,7 +468,6 @@ def run_assistant() -> None:
             print(f"Screenshot permission issue: {e}")
             print("Configure: System Settings -> Privacy -> Screen Recording")
             return
-
     if pynput_keyboard is None:
         print("pynput not available (run: uv sync)")
         return
@@ -489,8 +500,10 @@ def run_assistant() -> None:
                 time.sleep(CONFIG["screenshot_interval"])
                 continue
             current_image = take_screenshot()
-            if current_image and has_screen_changed(current_image):
-                print("\nScreen changed...")
+            if current_image:
+                filepath = save_capture(current_image)
+                if has_screen_changed(current_image):
+                    print(f"\nScreen changed... ({filepath.name})")
                 question, response, confidence = process_screen()
                 if question:
                     print(f" Q ({confidence:.0f}%): {question[:200]}...")
